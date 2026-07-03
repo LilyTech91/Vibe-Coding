@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gesture Particle Field</title>
+  <!--
+    Project prompt for Codex / Projects:
+    Build a single-file HTML experience using Three.js and MediaPipe Hands.
+    It should open in a browser, request camera access, detect one hand in real time,
+    convert hand openness into a smooth 0-1 signal, and use that signal to control
+    particle scale, spread, turbulence, and speed. Include a minimal modern UI panel
+    with particle shape choices for snowflake, petals, nebula, and sparks; a color
+    picker; a hand detection status readout; and a fullscreen button. Keep the first
+    version scoped to the MVP: one hand, no uploaded models, no backend, no build step.
+  -->
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #06080c;
+      --panel: rgba(13, 18, 26, 0.72);
+      --panel-border: rgba(255, 255, 255, 0.12);
+      --text: #f5f7fb;
+      --muted: #9aa4b2;
+      --accent: #6ee7f9;
+      --accent-strong: #f8c471;
+      --danger: #ff8a8a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    body {
+      position: relative;
+    }
+
+    #scene {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .topbar {
+      position: fixed;
+      top: 18px;
+      left: 18px;
+      right: 18px;
+      z-index: 3;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      pointer-events: none;
+    }
+
+    .brand {
+      pointer-events: auto;
+      padding: 12px 14px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: rgba(6, 8, 12, 0.58);
+      backdrop-filter: blur(18px);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: clamp(18px, 2vw, 24px);
+      line-height: 1.1;
+      font-weight: 720;
+    }
+
+    .brand p {
+      margin: 6px 0 0;
+      max-width: 360px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .icon-button {
+      pointer-events: auto;
+      display: inline-grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: rgba(6, 8, 12, 0.62);
+      color: var(--text);
+      cursor: pointer;
+      backdrop-filter: blur(18px);
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .icon-button:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 255, 255, 0.26);
+      background: rgba(18, 26, 38, 0.78);
+    }
+
+    .panel {
+      position: fixed;
+      z-index: 3;
+      left: 18px;
+      bottom: 18px;
+      width: min(360px, calc(100vw - 36px));
+      padding: 16px;
+      border: 1px solid var(--panel-border);
+      border-radius: 8px;
+      background: var(--panel);
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34);
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .panel-title strong {
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--danger);
+      box-shadow: 0 0 16px var(--danger);
+    }
+
+    .status.active .status-dot {
+      background: var(--accent);
+      box-shadow: 0 0 16px var(--accent);
+    }
+
+    .control {
+      display: grid;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .shape-option {
+      min-height: 38px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+    }
+
+    .shape-option:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+
+    .shape-option.active {
+      border-color: rgba(110, 231, 249, 0.62);
+      background: rgba(110, 231, 249, 0.14);
+    }
+
+    .color-row,
+    .meter-row {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      align-items: center;
+      gap: 12px;
+    }
+
+    input[type="color"] {
+      width: 48px;
+      height: 38px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .color-copy {
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .meter {
+      position: relative;
+      height: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.09);
+    }
+
+    .meter span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 0%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+      box-shadow: 0 0 18px rgba(110, 231, 249, 0.42);
+      transition: width 90ms linear;
+    }
+
+    #cameraPreview {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 2;
+      width: 170px;
+      max-width: 36vw;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 8px;
+      opacity: 0.24;
+      transform: scaleX(-1);
+      background: #000;
+    }
+
+    .permission {
+      position: fixed;
+      inset: auto 18px 18px auto;
+      z-index: 4;
+      max-width: min(430px, calc(100vw - 36px));
+      padding: 14px 16px;
+      border: 1px solid rgba(255, 138, 138, 0.28);
+      border-radius: 8px;
+      background: rgba(42, 14, 18, 0.78);
+      color: #ffdada;
+      font-size: 13px;
+      line-height: 1.5;
+      backdrop-filter: blur(18px);
+      display: none;
+    }
+
+    @media (max-width: 700px) {
+      .topbar {
+        top: 12px;
+        left: 12px;
+        right: 12px;
+      }
+
+      .brand {
+        max-width: calc(100vw - 80px);
+      }
+
+      .brand p {
+        display: none;
+      }
+
+      .panel {
+        left: 12px;
+        bottom: 12px;
+        width: calc(100vw - 24px);
+        padding: 14px;
+      }
+
+      #cameraPreview {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="scene" aria-label="3D 粒子系统"></canvas>
+
+  <div class="topbar">
+    <div class="brand">
+      <h1>Gesture Particle Field</h1>
+      <p>单手张合控制粒子群缩放、扩散与流动。首次打开需要允许摄像头访问。</p>
+    </div>
+    <button class="icon-button" id="fullscreenButton" type="button" title="全屏">
+      <i data-lucide="maximize-2" aria-hidden="true"></i>
+    </button>
+  </div>
+
+  <aside class="panel" aria-label="粒子控制面板">
+    <div class="panel-title">
+      <strong>实时控制</strong>
+      <span class="status" id="handStatus">
+        <span class="status-dot"></span>
+        <span id="handStatusText">等待手势</span>
+      </span>
+    </div>
+
+    <div class="control">
+      <label>粒子形态</label>
+      <div class="segmented" id="shapeControls">
+        <button class="shape-option active" type="button" data-shape="snowflake">雪花</button>
+        <button class="shape-option" type="button" data-shape="petals">花瓣</button>
+        <button class="shape-option" type="button" data-shape="nebula">星云</button>
+        <button class="shape-option" type="button" data-shape="sparks">光点</button>
+      </div>
+    </div>
+
+    <div class="control">
+      <label for="particleColor">粒子颜色</label>
+      <div class="color-row">
+        <input id="particleColor" type="color" value="#6ee7f9" />
+        <span class="color-copy" id="colorText">#6EE7F9</span>
+      </div>
+    </div>
+
+    <div class="control">
+      <label>手掌张合</label>
+      <div class="meter-row">
+        <span class="color-copy" id="opennessText">0%</span>
+        <div class="meter" aria-hidden="true"><span id="opennessMeter"></span></div>
+      </div>
+    </div>
+  </aside>
+
+  <video id="cameraPreview" autoplay playsinline muted></video>
+  <div class="permission" id="permissionMessage"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js";
+
+    const PARTICLE_COUNT = 4200;
+    const canvas = document.querySelector("#scene");
+    const video = document.querySelector("#cameraPreview");
+    const handStatus = document.querySelector("#handStatus");
+    const handStatusText = document.querySelector("#handStatusText");
+    const opennessMeter = document.querySelector("#opennessMeter");
+    const opennessText = document.querySelector("#opennessText");
+    const colorInput = document.querySelector("#particleColor");
+    const colorText = document.querySelector("#colorText");
+    const shapeControls = document.querySelector("#shapeControls");
+    const fullscreenButton = document.querySelector("#fullscreenButton");
+    const permissionMessage = document.querySelector("#permissionMessage");
+
+    if (window.lucide) {
+      window.lucide.createIcons();
+    }
+
+    const clamp01 = (value) => Math.min(1, Math.max(0, value));
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const randomRange = (min, max) => min + Math.random() * (max - min);
+
+    class GestureState {
+      constructor() {
+        this.detected = false;
+        this.rawOpenness = 0;
+        this.openness = 0;
+        this.lastSeenAt = 0;
+      }
+
+      updateFromLandmarks(landmarks) {
+        const wrist = landmarks[0];
+        const indexMcp = landmarks[5];
+        const pinkyMcp = landmarks[17];
+        const middleMcp = landmarks[9];
+        const tips = [4, 8, 12, 16, 20].map((index) => landmarks[index]);
+        const palmWidth = distance(indexMcp, pinkyMcp);
+        const palmHeight = distance(wrist, middleMcp);
+        const palmSize = Math.max(0.001, (palmWidth + palmHeight) * 0.5);
+        const averageTipDistance = tips.reduce((sum, tip) => sum + distance(tip, wrist), 0) / tips.length;
+        const openness = clamp01((averageTipDistance / palmSize - 1.34) / 1.28);
+
+        this.detected = true;
+        this.rawOpenness = openness;
+        this.lastSeenAt = performance.now();
+      }
+
+      updateSmoothing() {
+        const elapsedSinceHand = performance.now() - this.lastSeenAt;
+        if (elapsedSinceHand > 450) {
+          this.detected = false;
+          this.rawOpenness = 0.18;
+        }
+        this.openness = lerp(this.openness, this.rawOpenness, this.detected ? 0.16 : 0.035);
+      }
+    }
+
+    function distance(a, b) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const dz = (a.z || 0) - (b.z || 0);
+      return Math.hypot(dx, dy, dz);
+    }
+
+    class ParticleField {
+      constructor() {
+        this.shape = "snowflake";
+        this.color = new THREE.Color(colorInput.value);
+        this.positions = new Float32Array(PARTICLE_COUNT * 3);
+        this.targets = new Float32Array(PARTICLE_COUNT * 3);
+        this.seeds = new Float32Array(PARTICLE_COUNT * 4);
+
+        for (let i = 0; i < PARTICLE_COUNT; i += 1) {
+          this.seeds[i * 4] = Math.random();
+          this.seeds[i * 4 + 1] = Math.random();
+          this.seeds[i * 4 + 2] = Math.random();
+          this.seeds[i * 4 + 3] = randomRange(0.4, 1.4);
+        }
+
+        this.geometry = new THREE.BufferGeometry();
+        this.geometry.setAttribute("position", new THREE.BufferAttribute(this.positions, 3));
+        this.material = new THREE.PointsMaterial({
+          color: this.color,
+          map: createParticleTexture(),
+          size: 0.035,
+          transparent: true,
+          opacity: 0.92,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending
+        });
+        this.points = new THREE.Points(this.geometry, this.material);
+        this.points.rotation.x = -0.14;
+        this.setShape(this.shape, true);
+      }
+
+      setShape(shape, instant = false) {
+        this.shape = shape;
+        for (let i = 0; i < PARTICLE_COUNT; i += 1) {
+          const target = shapePoint(shape, i, this.seeds);
+          const offset = i * 3;
+          this.targets[offset] = target.x;
+          this.targets[offset + 1] = target.y;
+          this.targets[offset + 2] = target.z;
+
+          if (instant) {
+            this.positions[offset] = target.x * 0.7;
+            this.positions[offset + 1] = target.y * 0.7;
+            this.positions[offset + 2] = target.z * 0.7;
+          }
+        }
+      }
+
+      setColor(value) {
+        this.color.set(value);
+        this.material.color.copy(this.color);
+      }
+
+      update(time, openness) {
+        const spread = lerp(0.72, 2.34, openness);
+        const pulse = lerp(0.018, 0.09, openness);
+        const driftSpeed = lerp(0.35, 1.45, openness);
+        const settle = lerp(0.035, 0.082, openness);
+
+        for (let i = 0; i < PARTICLE_COUNT; i += 1) {
+          const offset = i * 3;
+          const seedOffset = i * 4;
+          const sx = this.seeds[seedOffset];
+          const sy = this.seeds[seedOffset + 1];
+          const sz = this.seeds[seedOffset + 2];
+          const motion = this.seeds[seedOffset + 3];
+          const wave = Math.sin(time * driftSpeed * motion + sx * 13.2) * pulse;
+          const twist = Math.cos(time * driftSpeed * 0.78 + sy * 11.7) * pulse;
+          const breathe = 1 + Math.sin(time * 0.8 + sz * 9.4) * lerp(0.018, 0.08, openness);
+
+          const targetX = this.targets[offset] * spread * breathe + wave;
+          const targetY = this.targets[offset + 1] * spread * breathe + twist;
+          const targetZ = this.targets[offset + 2] * spread + (wave - twist) * 0.7;
+
+          this.positions[offset] += (targetX - this.positions[offset]) * settle;
+          this.positions[offset + 1] += (targetY - this.positions[offset + 1]) * settle;
+          this.positions[offset + 2] += (targetZ - this.positions[offset + 2]) * settle;
+        }
+
+        this.material.size = lerp(0.018, 0.054, openness);
+        this.points.rotation.y += lerp(0.001, 0.005, openness);
+        this.points.rotation.z += lerp(0.0003, 0.0022, openness);
+        this.geometry.attributes.position.needsUpdate = true;
+      }
+    }
+
+    function shapePoint(shape, index, seeds) {
+      const seedOffset = index * 4;
+      const a = seeds[seedOffset];
+      const b = seeds[seedOffset + 1];
+      const c = seeds[seedOffset + 2];
+
+      if (shape === "snowflake") {
+        const arm = index % 6;
+        const angle = arm * Math.PI / 3 + randomRange(-0.055, 0.055);
+        const branch = Math.floor(index / 6) % 5;
+        const radius = 0.18 + Math.pow(a, 0.65) * 1.42;
+        const branchAngle = angle + (branch - 2) * 0.17 * Math.pow(b, 0.7);
+        const thinness = randomRange(-0.055, 0.055);
+        return new THREE.Vector3(
+          Math.cos(branchAngle) * radius + Math.cos(angle + Math.PI / 2) * thinness,
+          Math.sin(branchAngle) * radius + Math.sin(angle + Math.PI / 2) * thinness,
+          randomRange(-0.08, 0.08)
+        );
+      }
+
+      if (shape === "petals") {
+        const petal = index % 8;
+        const angle = petal * Math.PI / 4;
+        const localAngle = (b - 0.5) * 1.8;
+        const length = 0.35 + Math.pow(a, 0.38) * 1.05;
+        const width = Math.sin(Math.PI * a) * 0.26 * (c > 0.5 ? 1 : -1);
+        const x = length * Math.cos(localAngle) + width * Math.sin(localAngle);
+        const y = length * Math.sin(localAngle) * 0.48 + width * Math.cos(localAngle);
+        const rotatedX = x * Math.cos(angle) - y * Math.sin(angle);
+        const rotatedY = x * Math.sin(angle) + y * Math.cos(angle);
+        return new THREE.Vector3(rotatedX, rotatedY, randomRange(-0.12, 0.12));
+      }
+
+      if (shape === "nebula") {
+        const theta = a * Math.PI * 2;
+        const phi = Math.acos(2 * b - 1);
+        const radius = Math.pow(c, 0.42) * 1.2;
+        return new THREE.Vector3(
+          Math.sin(phi) * Math.cos(theta) * radius,
+          Math.sin(phi) * Math.sin(theta) * radius * 0.78,
+          Math.cos(phi) * radius
+        );
+      }
+
+      const stream = index % 14;
+      const angle = stream * Math.PI * 2 / 14 + a * 0.42;
+      const radius = 0.18 + b * 1.35;
+      const z = (c - 0.5) * 1.35;
+      return new THREE.Vector3(
+        Math.cos(angle + z * 0.7) * radius,
+        Math.sin(angle + z * 0.7) * radius,
+        z
+      );
+    }
+
+    function createParticleTexture() {
+      const textureCanvas = document.createElement("canvas");
+      textureCanvas.width = 128;
+      textureCanvas.height = 128;
+      const context = textureCanvas.getContext("2d");
+      const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 58);
+      gradient.addColorStop(0, "rgba(255,255,255,1)");
+      gradient.addColorStop(0.26, "rgba(255,255,255,0.86)");
+      gradient.addColorStop(0.68, "rgba(255,255,255,0.24)");
+      gradient.addColorStop(1, "rgba(255,255,255,0)");
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, 128, 128);
+      const texture = new THREE.CanvasTexture(textureCanvas);
+      texture.needsUpdate = true;
+      return texture;
+    }
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance"
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x06080c, 0.08);
+
+    const camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.1, 100);
+    camera.position.set(0, 0, 4.6);
+
+    const field = new ParticleField();
+    scene.add(field.points);
+
+    const gesture = new GestureState();
+    let hands = null;
+    let cameraReady = false;
+    let processingFrame = false;
+
+    function resize() {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height, false);
+    }
+
+    async function setupCamera() {
+      try {
+        if (!window.Hands) {
+          throw new Error("MediaPipe Hands 加载失败，请检查网络连接。");
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 960 },
+            height: { ideal: 720 },
+            facingMode: "user"
+          },
+          audio: false
+        });
+
+        video.srcObject = stream;
+        await video.play();
+
+        hands = new window.Hands({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+        hands.setOptions({
+          maxNumHands: 1,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.66,
+          minTrackingConfidence: 0.62
+        });
+        hands.onResults((results) => {
+          const landmarks = results.multiHandLandmarks && results.multiHandLandmarks[0];
+          if (landmarks) {
+            gesture.updateFromLandmarks(landmarks);
+          }
+          processingFrame = false;
+        });
+
+        cameraReady = true;
+        permissionMessage.style.display = "none";
+        processVideoFrame();
+      } catch (error) {
+        cameraReady = false;
+        permissionMessage.textContent = `${error.message || "摄像头无法启动。"} 如果直接双击 HTML 被浏览器限制，请用本地服务器或 localhost 打开。`;
+        permissionMessage.style.display = "block";
+      }
+    }
+
+    async function processVideoFrame() {
+      if (cameraReady && hands && video.readyState >= 2 && !processingFrame) {
+        processingFrame = true;
+        await hands.send({ image: video });
+      }
+      requestAnimationFrame(processVideoFrame);
+    }
+
+    function updateUi() {
+      const percent = Math.round(gesture.openness * 100);
+      opennessMeter.style.width = `${percent}%`;
+      opennessText.textContent = `${percent}%`;
+      handStatus.classList.toggle("active", gesture.detected);
+      handStatusText.textContent = gesture.detected ? "手势已锁定" : "等待手势";
+    }
+
+    function animate(timeMs) {
+      const time = timeMs * 0.001;
+      gesture.updateSmoothing();
+      field.update(time, gesture.openness);
+      updateUi();
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    shapeControls.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-shape]");
+      if (!button) return;
+
+      shapeControls.querySelectorAll(".shape-option").forEach((option) => {
+        option.classList.toggle("active", option === button);
+      });
+      field.setShape(button.dataset.shape);
+    });
+
+    colorInput.addEventListener("input", () => {
+      const value = colorInput.value.toUpperCase();
+      colorText.textContent = value;
+      field.setColor(value);
+    });
+
+    fullscreenButton.addEventListener("click", async () => {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+        fullscreenButton.innerHTML = '<i data-lucide="minimize-2" aria-hidden="true"></i>';
+      } else {
+        await document.exitFullscreen();
+        fullscreenButton.innerHTML = '<i data-lucide="maximize-2" aria-hidden="true"></i>';
+      }
+      if (window.lucide) window.lucide.createIcons();
+    });
+
+    window.addEventListener("resize", resize);
+    resize();
+    setupCamera();
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
